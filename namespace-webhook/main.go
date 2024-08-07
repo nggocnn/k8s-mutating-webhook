@@ -1,7 +1,6 @@
 package main
 
 import (
-    "context"
 	"bytes"
 	"encoding/json"
 	"fmt"
@@ -15,7 +14,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
     "k8s.io/apimachinery/pkg/runtime/schema"
     "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 )
 
@@ -56,13 +55,13 @@ func ServerCreateNamespaceBackup(w http.ResponseWriter, r *http.Request) {
 
     switch admissionReview.Request.Operation {
         case admissionv1.Create:
-            logger.Info(fmt.Sprint("Namespace %s created", namespace.Name))
+            logger.Info(fmt.Sprintf("Namespace %s created", namespace.Name))
             // Handle creation logic here
         case admissionv1.Update:
-            logger.Info(fmt.Sprint("Namespace %s updated", namespace.Name))
+            logger.Info(fmt.Sprintf("Namespace %s updated", namespace.Name))
             // Handle update logic here
         case admissionv1.Delete:
-            logger.Info(fmt.Sprint("Namespace %s deleted", namespace.Name))
+            logger.Info(fmt.Sprintf("Namespace %s deleted", namespace.Name))
             // Handle deletion logic here
         default:
             logger.Info("Unknown operation")
@@ -77,20 +76,20 @@ func ServerCreateNamespaceBackup(w http.ResponseWriter, r *http.Request) {
                 return
             }
 
-            clientset, err := kubernetes.NewForConfig(config)
+            dynamicClient, err := dynamic.NewForConfig(config)
             if err != nil {
 				logger.WithFields(logrus.Fields{"error": err}).Error("failed to create clientset")
 				http.Error(w, fmt.Sprintf("Could not create clientset: %v", err), http.StatusInternalServerError)
 				return
 			}
 
-            veleroBackupResource = schema.GroupVersionResource{
+            veleroBackupResource := schema.GroupVersionResource{
                 Group: "velero.io",
                 Version: "v1",
-                Resource: "backups"
+                Resource: "backups",
             }
 
-            veleroBackup = &unstructured.Unstructured{
+            veleroBackup := &unstructured.Unstructured{
                 Object: map[string]interface{}{
                     "apiVersion": "velero.io/v1",
 					"kind": "Backup",
@@ -104,12 +103,20 @@ func ServerCreateNamespaceBackup(w http.ResponseWriter, r *http.Request) {
 						"includedNamespaces": []string{"nginx-example"},
 						"storageLocation": "default",
 						"ttl": "720h0m0s",
-					}
-                }
+					},
+                },
             }
 
-			
-        }
+			logger.Info(fmt.Sprintf("Creating velero backup %s", veleroBackup.Object["metadata"].(map[string]interface{})["name"]))
+			logger.Info(fmt.Sprintf("Target: %s, Runtime: %s", target, runtime))
+
+			_, err = dynamicClient.Resource(veleroBackupResource).Namespace("velero").Create(r.Context(), veleroBackup, metav1.CreateOptions{})
+			if err != nil {
+				logger.WithFields(logrus.Fields{"error": err}).Error("Failed to create velero backup")
+				http.Error(w, fmt.Sprintf("Could not create velero backup: %v", err), http.StatusInternalServerError)
+				return
+			}
+		}
     }
 
     response := admissionv1.AdmissionReview{
