@@ -82,12 +82,13 @@ func ServerNamespaceBackup(w http.ResponseWriter, r *http.Request) {
 
     targetName, targetKey := namespace.Labels["namespace.oam.dev/target"]
 	runtime, runtimeKey := namespace.Labels["usage.oam.dev/runtime"]
+	oldTargetName, oldTargetKey := oldNamespace.Labels["namespace.oam.dev/target"]
+	oldRuntime, oldRuntimeKey := oldNamespace.Labels["usage.oam.dev/runtime"]
+
     projectName := "test-project"
 
 	switch admissionReview.Request.Operation {
         case admissionv1.Update:
-            oldTargetName, oldTargetKey := oldNamespace.Labels["namespace.oam.dev/target"]
-            oldRuntime, oldRuntimeKey := oldNamespace.Labels["usage.oam.dev/runtime"]
             if targetKey && targetName != "" && runtimeKey && runtime == "target" && (!oldTargetKey || oldTargetName == "" || !oldRuntimeKey || oldRuntime == "") {
                 cronExpression := "@every 5m"
                 createVeleroSchedule(*r, dynamicClient, projectName, targetName, namespace.Name, cronExpression, logger)
@@ -97,8 +98,6 @@ func ServerNamespaceBackup(w http.ResponseWriter, r *http.Request) {
             }
             
         case admissionv1.Delete:
-            oldTargetName, oldTargetKey := oldNamespace.Labels["namespace.oam.dev/target"]
-            oldRuntime, oldRuntimeKey := oldNamespace.Labels["usage.oam.dev/runtime"]
             if oldTargetKey && oldTargetName != "" && oldRuntimeKey && oldRuntime == "target" {
                 deleteVeleroSchedule(*r, dynamicClient, projectName, oldTargetName, oldNamespace.Name, logger)
             }

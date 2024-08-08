@@ -5,8 +5,8 @@ metadata:
   name: backup-creator
 rules:
 - apiGroups: ["velero.io"]
-  resources: ["backups"]
-  verbs: ["create"]
+  resources: ["backups", "schedules"]
+  verbs: ["create", "delete", "get"]
 
 ---
 apiVersion: v1
@@ -52,9 +52,6 @@ spec:
         imagePullPolicy: Always
         ports:
         - containerPort: 443
-        env:
-        - name: TLS
-          value: "true"
         livenessProbe:
           httpGet:
             path: /health
@@ -106,7 +103,7 @@ webhooks:
       path: "/validate"
       port: 443
   rules:
-  - operations: ["CREATE", "UPDATE", "DELETE"]
+  - operations: ["UPDATE", "DELETE"]
     apiGroups: [""]
     apiVersions: ["v1"]
     resources: ["namespaces"]

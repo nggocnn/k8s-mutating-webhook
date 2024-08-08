@@ -19,7 +19,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build,sharing=private \
   go build -o bin/admission-webhook .
 
 # Use a minimal image for the final build
-FROM alpine:3.18 AS run
+FROM scratch AS run
 
 COPY --from=build /app/bin/admission-webhook /usr/local/bin/
 
