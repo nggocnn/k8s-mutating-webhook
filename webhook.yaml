@@ -52,6 +52,9 @@ spec:
         imagePullPolicy: Always
         ports:
         - containerPort: 443
+        env:
+          - name: CRON_EXPRESSION
+            value: "@every 5m"
         livenessProbe:
           httpGet:
             path: /health
@@ -103,7 +106,7 @@ webhooks:
       path: "/validate"
       port: 443
   rules:
-  - operations: ["UPDATE", "DELETE"]
+  - operations: ["CREATE", "UPDATE", "DELETE"]
     apiGroups: [""]
     apiVersions: ["v1"]
     resources: ["namespaces"]

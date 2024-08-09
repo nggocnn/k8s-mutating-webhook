@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
     "time"
+	"string"
 
 	"github.com/sirupsen/logrus"
 
@@ -19,8 +20,17 @@ import (
 	"k8s.io/client-go/rest"
 )
 
+var cronExpression string = "@every 1h" // Velero Schedule - Cron expression define when to run the Backup
+var	csiSnapshotTimeout string = "10m" // csiSnapshotTimeout specifies the time used to wait for CSI VolumeSnapshot status turns to ReadyToUse during creation, before returning error as timeout. The default value is 10 minute.
+var	storageLocation string = "default" // Where Velero store the tarball and logs
+var	ttl string = "720h0m0s" // The amount of time before backups created on this schedule are eligible for garbage collection. If not specified, a default value of 30 days will be used.
+var	defaultVolumesToFsBackup bool // whether pod volume file system backup should be used for all volumes by default.
+var backupSufix string = "backup" // Backup sufix
+var	logFormat string = "text" // Log format (text or json)
+var	logLevel string = "" // Log level (debug, info, warn, error, fatal, panic)
+
 func main() {
-	setLogger()
+	setEnv()
 
 	http.HandleFunc("/validate", ServerNamespaceBackup)
 	http.HandleFunc("/health", ServerHealth)
@@ -42,15 +52,17 @@ func ServerNamespaceBackup(w http.ResponseWriter, r *http.Request) {
 	}
 
     oldNamespace := corev1.Namespace{}
-    err = json.Unmarshal(admissionReview.Request.OldObject.Raw, &oldNamespace)
-    if err != nil {
-        logger.WithFields(logrus.Fields{"error": err}).Error("Failed to parse old namespace")
-        http.Error(w, fmt.Sprintf("Could not parse old namespace: %v", err), http.StatusBadRequest)
-        return
-    }
-
 	namespace := corev1.Namespace{}
+	
     switch admissionReview.Request.Operation {
+		case admissionv1.Create:
+			err := json.Unmarshal(admissionReview.Request.Object.Raw, &namespace)
+			if err != nil {
+				logger.WithFields(logrus.Fields{"error": err}).Error("Failed to parse namespace")
+				http.Error(w, fmt.Sprintf("Could not parse namespace: %v", err), http.StatusBadRequest)
+				return
+			}
+			logger.Info(fmt.Sprintf("Namespace %s created", namespace.Name))
 		case admissionv1.Update:
             err := json.Unmarshal(admissionReview.Request.Object.Raw, &namespace)
             if err != nil {
@@ -59,7 +71,19 @@ func ServerNamespaceBackup(w http.ResponseWriter, r *http.Request) {
                 return
             }
 			logger.Info(fmt.Sprintf("Namespace %s updated", namespace.Name))
+			err = json.Unmarshal(admissionReview.Request.OldObject.Raw, &oldNamespace)
+			if err != nil {
+				logger.WithFields(logrus.Fields{"error": err}).Error("Failed to parse old namespace")
+				http.Error(w, fmt.Sprintf("Could not parse old namespace: %v", err), http.StatusBadRequest)
+				return
+			}
 		case admissionv1.Delete:
+			err = json.Unmarshal(admissionReview.Request.OldObject.Raw, &oldNamespace)
+			if err != nil {
+				logger.WithFields(logrus.Fields{"error": err}).Error("Failed to parse old namespace")
+				http.Error(w, fmt.Sprintf("Could not parse old namespace: %v", err), http.StatusBadRequest)
+				return
+			}
             logger.Info(fmt.Sprintf("Namespace %s deleted", oldNamespace.Name))
 		default:
             logger.Info("Unknown operation")
@@ -85,21 +109,23 @@ func ServerNamespaceBackup(w http.ResponseWriter, r *http.Request) {
 	oldTargetName, oldTargetKey := oldNamespace.Labels["namespace.oam.dev/target"]
 	oldRuntime, oldRuntimeKey := oldNamespace.Labels["usage.oam.dev/runtime"]
 
-    projectName := "test-project"
-
 	switch admissionReview.Request.Operation {
+		case admissionv1.Create:
+			if targetKey && targetName != "" && runtimeKey && runtime == "target" {
+				createVeleroSchedule(*r, dynamicClient, namespace.Name, logger)
+				createVeleroBackup(*r, dynamicClient,  namespace.Name, logger)
+			}
         case admissionv1.Update:
             if targetKey && targetName != "" && runtimeKey && runtime == "target" && (!oldTargetKey || oldTargetName == "" || !oldRuntimeKey || oldRuntime == "") {
-                cronExpression := "@every 5m"
-                createVeleroSchedule(*r, dynamicClient, projectName, targetName, namespace.Name, cronExpression, logger)
-                createVeleroBackup(*r, dynamicClient,  projectName, targetName, namespace.Name, logger)
+                createVeleroSchedule(*r, dynamicClient, namespace.Name, logger)
+                createVeleroBackup(*r, dynamicClient,  namespace.Name, logger)
             } else if (!targetKey || targetName == "" || !runtimeKey || runtime != "target") && oldTargetKey && oldTargetName != "" && oldRuntimeKey && oldRuntime == "target" {
-                deleteVeleroSchedule(*r, dynamicClient, projectName, oldTargetName, namespace.Name, logger)
+                deleteVeleroSchedule(*r, dynamicClient, namespace.Name, logger)
             }
             
         case admissionv1.Delete:
             if oldTargetKey && oldTargetName != "" && oldRuntimeKey && oldRuntime == "target" {
-                deleteVeleroSchedule(*r, dynamicClient, projectName, oldTargetName, oldNamespace.Name, logger)
+                deleteVeleroSchedule(*r, dynamicClient, oldNamespace.Name, logger)
             }
     }
 
@@ -121,8 +147,8 @@ func ServerNamespaceBackup(w http.ResponseWriter, r *http.Request) {
 	w.Write(respBytes)
 }
 
-func createVeleroSchedule(r http.Request, client dynamic.Interface, projectName string, targetName string, namespaceName string, cronExpression string, logger *logrus.Entry) {
-	scheduleName := fmt.Sprintf("%s-%s-%s", projectName, targetName, namespaceName)
+func createVeleroSchedule(r http.Request, client dynamic.Interface, namespaceName string, logger *logrus.Entry) {
+	scheduleName := fmt.Sprintf("%s-backup", namespaceName)
     
     veleroScheduleResource := schema.GroupVersionResource{
 		Group: "velero.io",
@@ -147,11 +173,11 @@ func createVeleroSchedule(r http.Request, client dynamic.Interface, projectName 
 				"schedule": cronExpression,
 				"useOwnerReferencesInBackup": false,
 				"template": map[string]interface{}{
-					"csiSnapshotTimeout": "10m",
+					"csiSnapshotTimeout": csiSnapshotTimeout,
 					"includedNamespaces": []string{namespaceName},
-					"storageLocation": "default",
-					"ttl": "720h0m0s",
-					"defaultVolumesToFsBackup": true,
+					"storageLocation": storageLocation,
+					"ttl": backupTTL,
+					"defaultVolumesToFsBackup": defaultVolumesToFsBackup,
 				},
 			},
 		},
@@ -164,8 +190,8 @@ func createVeleroSchedule(r http.Request, client dynamic.Interface, projectName 
 	}
 }
 
-func createVeleroBackup(r http.Request, client dynamic.Interface, projectName string, targetName string, namespaceName string, logger *logrus.Entry) {
-	scheduleName := fmt.Sprintf("%s-%s-%s", projectName, targetName, namespaceName)
+func createVeleroBackup(r http.Request, client dynamic.Interface, namespaceName string, logger *logrus.Entry) {
+	scheduleName := fmt.Sprintf("%s-backup", namespaceName)
     backupName := fmt.Sprintf("%s-%s", scheduleName, time.Now().Format("20060102150405"))
 
     veleroBackupResource := schema.GroupVersionResource{
@@ -183,12 +209,11 @@ func createVeleroBackup(r http.Request, client dynamic.Interface, projectName st
 				"namespace": "velero",
 			},
 			"spec": map[string]interface{}{
-				"csiSnapshotTimeout": "10m",
-				"itemOperationTimeout": "4h",
+				"csiSnapshotTimeout": csiSnapshotTimeout,
 				"includedNamespaces": []string{namespaceName},
-				"storageLocation": "default",
-				"ttl": "720h0m0s",
-				"defaultVolumesToFsBackup": true,
+				"storageLocation": storageLocation,
+				"ttl": backupTTL,
+				"defaultVolumesToFsBackup": defaultVolumesToFsBackup,
 			},
 		},
 	}
@@ -200,8 +225,8 @@ func createVeleroBackup(r http.Request, client dynamic.Interface, projectName st
 	}
 }
 
-func deleteVeleroSchedule(r http.Request, client dynamic.Interface, projectName string, targetName string, namespaceName string, logger *logrus.Entry) {
-    scheduleName := fmt.Sprintf("%s-%s-%s", projectName, targetName, namespaceName)
+func deleteVeleroSchedule(r http.Request, client dynamic.Interface, namespaceName string, logger *logrus.Entry) {
+    scheduleName := fmt.Sprintf("%s-backup", namespaceName)
 
 	veleroScheduleResource := schema.GroupVersionResource{
 		Group: "velero.io",
@@ -220,24 +245,6 @@ func ServerHealth(w http.ResponseWriter, r *http.Request) {
 	logrus.WithFields(logrus.Fields{"uri": r.RequestURI}).Debug("healthy")
 	w.WriteHeader(http.StatusOK)
     w.Write([]byte("ok"))
-}
-
-func setLogger() {
-	logrus.SetLevel(logrus.DebugLevel)
-
-	logLevel := os.Getenv("LOG_LEVEL")
-
-	if logLevel != "" {
-		level, err := logrus.ParseLevel(logLevel)
-		if err != nil {
-			logrus.Fatalf("Error setting log level: %v", err)
-		}
-		logrus.SetLevel(level)
-	}
-
-	if os.Getenv("LOG_FORMAT") == "json" {
-		logrus.SetFormatter(&logrus.JSONFormatter{})
-	}
 }
 
 func parseRequest(r http.Request) (*admissionv1.AdmissionReview, error) {
@@ -263,4 +270,55 @@ func parseRequest(r http.Request) (*admissionv1.AdmissionReview, error) {
 	}
 
 	return &a, nil
+}
+
+func setEnv() {
+	logger := logrus.WithFields(logrus.Fields{})
+
+	cronExpression = os.Getenv("CRON_EXPRESSION", cronExpression)
+	
+	csiSnapshotTimeout = os.Getenv("CSI_SNAPSHOT_TIMEOUT", csiSnapshotTimeout)
+
+	storageLocation = os.Getenv("STORAGE_LOCATION", storageLocation)
+	
+	ttl = os.Getenv("BACKUP_TTL", ttl)
+	
+	defaultVolumesToFsBackupEnv := os.Getenv("DEFAULT_VOLUMES_TO_FS_BACKUP")
+	if defaultVolumesToFsBackupEnv == "" || strings.ToLower(defaultVolumesToFsBackupEnv) == "true" {
+		defaultVolumesToFsBackup = true
+	} else {
+		defaultVolumesToFsBackup = false
+	}
+
+	backupSufix = os.Getenv("BACKUP_SUFIX", backupSufix)
+
+	logFormat = os.Getenv("LOG_FORMAT", "text")
+
+	logLevel := os.Getenv("LOG_LEVEL")
+
+	logger.WithFields(logrus.Fields{
+        "cronExpression":			cronExpression,
+        "csiSnapshotTimeout":		csiSnapshotTimeout,
+        "storageLocation":			storageLocation,
+        "backupTTL":				ttl,
+        "defaultVolumesToFsBackup":	defaultVolumesToFsBackup,
+		"backupSufix":				backupSufix,
+        "logFormat":				logFormat,
+        "logLevel":					logLevel,
+    }).Info("Set environment variables")
+
+	if logFormat == "json" {
+		logrus.SetFormatter(&logrus.JSONFormatter{})
+	} else {
+		logrus.SetFormatter(&logrus.TextFormatter{})
+	}
+
+	logrus.SetLevel(logrus.DebugLevel)
+
+	level, err := logrus.ParseLevel(logLevel)
+	if err != nil {
+		logrus.Warn("Invalid LOG_LEVEL; using default level")
+	} else {
+		logrus.SetLevel(level)
+	}
 }

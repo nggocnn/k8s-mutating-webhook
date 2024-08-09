@@ -1,8 +1,0 @@
-apiVersion: v1
-kind: Namespace
-metadata:
-  labels:
-    kubernetes.io/metadata.name: hel0
-    namespace.oam.dev/target: hell0
-    usage.oam.dev/runtime: target
-  name: helo
