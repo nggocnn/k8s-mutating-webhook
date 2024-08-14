@@ -86,13 +86,13 @@ spec:
           initialDelaySeconds: 5
           periodSeconds: 10
         volumeMounts:
-        - name: webhook-certs
+        - name: webhook-server-cert
           mountPath: /etc/admission-webhook/tls
           readOnly: true
       volumes:
-      - name: webhook-certs
+      - name: webhook-server-cert
         secret:
-          secretName: server-cert
+          secretName: webhook-server-cert
 ---
 apiVersion: v1
 kind: Service
@@ -112,9 +112,9 @@ kind: MutatingWebhookConfiguration
 metadata:
   name: namespace-webhook-config
   annotations:
-    cert-manager.io/inject-ca-from: default/client
+    cert-manager.io/inject-ca-from: default/server
 webhooks:
-- name: namespace-webhook-config.ngocnn.online
+- name: namespace-webhook-config.webhook.demo
   clientConfig:
     service:
       name: namespace-webhook-service
@@ -128,4 +128,4 @@ webhooks:
     resources: ["namespaces"]
   admissionReviewVersions: ["v1"]
   sideEffects: None
-  failurePolicy: Ignore
+  failurePolicy: Fail
