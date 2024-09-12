@@ -328,7 +328,7 @@ func setEnv() {
 
 	logFormat = getEnv("LOG_FORMAT", "text")
 
-	logLevel := getEnv("LOG_LEVEL", "")
+	logLevel = getEnv("LOG_LEVEL", "")
 
 	logger.WithFields(logrus.Fields{
 		"veleroNamespace":          veleroNamespace,
